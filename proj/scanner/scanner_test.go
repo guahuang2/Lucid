@@ -1,6 +1,7 @@
 package scanner
 
 import (
+	"proj/context"
 	"proj/token"
 	"testing"
 )
@@ -33,8 +34,7 @@ func VerifyTest(t *testing.T, tts []ExpectedResult, scanner *Scanner) {
 func Test1(t *testing.T) {
 
 	// This is a raw string in Go (aka its a multiline string). This will be easy to
-	inputFileName := "../golite/test1.golite"
-
+	ctx := context.New(false, "../golite/test1.golite")
 	// The expected result struct represents the token stream for the input source
 	expected := []ExpectedResult{
 		{token.PACKAGE, "package"},
@@ -73,7 +73,7 @@ func Test1(t *testing.T) {
 	}
 
 	// Define  a new scanner for some Cal program
-	scanner := New(inputFileName)
+	scanner := New(ctx)
 
 	// Verify that the scanner produces the tokens in the order that you expect.
 	VerifyTest(t, expected, scanner)

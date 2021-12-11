@@ -1,10 +1,13 @@
-a=*b
-cnil-3;
-var a int;
-var b bool;
-fmt.Println('a+3')
+package main;
 
-a==b!=_333
-&a+b-=3+=1<=c>=d
+import "fmt";
+var a bool;
+func main() {
 
-a==nil
+
+    var b bool;
+    var c bool;
+
+    a=true;
+
+}

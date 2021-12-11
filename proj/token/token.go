@@ -57,7 +57,7 @@ const (
 	COMMENT = "//"
 
 	//PUNCTUATOR
-	SEMICOLON  = ";"
+	SEMICOLON  = "semicolon"
 	PUNCTUATOR = ","
 	LEFTPAR    = "left parenthesis"
 	RIGHTPAR   = "right parenthesis"

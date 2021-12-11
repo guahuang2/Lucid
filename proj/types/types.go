@@ -2,22 +2,34 @@ package types
 
 type Type interface {
 	GetName() string
+	GetType() Type
 }
 
 type IntTy struct{}
 
 func (intTy *IntTy) GetName() string { return "int" }
+func (intTy *IntTy) GetType() Type   { return IntTySig }
 
 type BoolTy struct{}
 
 func (boolTy *BoolTy) GetName() string {
 	return "bool"
 }
+func (boolTy *BoolTy) GetType() Type { return BoolTySig }
 
-type UnknownTy struct{}
+type UnknownTy struct {
+	typeStr string
+}
 
 func (unknownTy *UnknownTy) GetName() string {
-	return "unknown"
+	return unknownTy.typeStr
+}
+func (unknownTy *UnknownTy) GetType() Type {
+	return UnknownTySig
+}
+
+func NewUnknownTy(nameStr string) *UnknownTy {
+	return &UnknownTy{typeStr: nameStr}
 }
 
 type StructTy struct {
@@ -32,6 +44,10 @@ func (structTy *StructTy) GetName() string {
 	return structTy.structName
 }
 
+func (structTy *StructTy) GetType() Type {
+	return StructTySig
+}
+
 type FunctTy struct {
 	funcName string
 }
@@ -41,7 +57,11 @@ func NewFuncTy(functName string) *FunctTy {
 }
 
 func (functTy *FunctTy) GetName() string {
-	return "function"
+	return functTy.funcName
+}
+
+func (functTy *FunctTy) GetType() Type {
+	return FuncTySig
 }
 
 type NilTy struct {
@@ -51,11 +71,18 @@ type NilTy struct {
 func (n *NilTy) GetName() string {
 	return "Nil"
 }
+func (n *NilTy) GetType() Type {
+	return NilTySig
+}
 
 type ImportTy struct{}
 
 func (importTy *ImportTy) GetName() string {
 	return "import"
+}
+
+func (importTy *ImportTy) GetType() Type {
+	return ImportTySig
 }
 
 var IntTySig *IntTy

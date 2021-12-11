@@ -1,25 +1,47 @@
 package parser
 
 import (
-	"flag"
 	"fmt"
 	"proj/ast"
 	cc "proj/context"
 	cs "proj/scanner"
-	st "proj/symboltable"
 	ct "proj/token"
+	"strconv"
 )
 
 type Parser struct {
 	tokens          []ct.Token
 	currIdx         int
+	psuedoIdx       int
 	compilerContext *cc.CompilerContext
 	scanner         *cs.Scanner
 	successfulBuild bool
 }
 
 func New(compilerContext *cc.CompilerContext, scanner *cs.Scanner) *Parser {
-	return &Parser{[]ct.Token{}, 0, compilerContext, scanner, false}
+	/*
+		Store the scanned tokens in the token list to allow back tracking in the parsing process
+	*/
+	p := Parser{tokens: []ct.Token{}, currIdx: 0, compilerContext: compilerContext, scanner: scanner, successfulBuild: true}
+	for {
+		tok, successful := p.scanner.NextToken()
+		if successful {
+			if tok.Type == ct.EOF {
+				p.tokens = append(p.tokens, *tok)
+				break
+			}
+			p.tokens = append(p.tokens, *tok)
+		} else {
+			continue
+		}
+	}
+	p.currIdx = 0
+	p.psuedoIdx = 0
+	return &p
+}
+
+func (p *Parser) currPsuedoToken() ct.Token {
+	return p.tokens[p.psuedoIdx]
 }
 
 func (p *Parser) currToken() ct.Token {
@@ -28,75 +50,119 @@ func (p *Parser) currToken() ct.Token {
 
 func (p *Parser) nextToken() {
 	if p.currIdx >= len(p.tokens)-1 {
-		fmt.Errorf("syntax error:%s", "Try reading out of token")
+		fmt.Println("syntax error:Try reading out of token")
 	} else {
 		p.currIdx += 1
+		p.psuedoIdx += 1
 	}
 }
 
 func (p *Parser) parseError(msg string) {
-	out := flag.CommandLine.Output()
-	fmt.Fprintf(out, "syntax error: #{msg}\n")
+	// out := flag.CommandLine.Output()
+	panic(fmt.Sprintf("syntax error: %s\n", msg))
+	p.successfulBuild = false
 }
 
 func (p *Parser) match(tokenType ct.TokenType) (ct.Token, bool) {
 	//Check whether the current token matches the given type
 	if tokenType == p.currToken().Type {
+		curToken := p.currToken()
 		p.nextToken()
-		return p.currToken(), true
+		return curToken, true
 	}
 	return p.currToken(), false
 }
 
+func (p *Parser) PseudoMatch(tokenType ct.TokenType, rollback bool) (ct.Token, bool) {
+	//Check whether the current token matches the given type
+	if tokenType == p.currPsuedoToken().Type {
+		curToken := p.currPsuedoToken()
+		p.psuedoIdx += 1
+		return curToken, true
+	}
+	if rollback {
+		p.psuedoIdx = p.currIdx
+	}
+	return p.currToken(), false
+}
+
+func (p *Parser) RollForward() {
+	//Check whether the current token matches the given type
+	p.currIdx = p.psuedoIdx
+}
+
+func (p *Parser) expectedTypeErrorMessage(curToken ct.TokenType, expectToken ct.TokenType) string {
+	return "unexpected token type error. Found: #{curToken.Type}, Expected: #{expectToken.Type}"
+}
+
 func (p *Parser) Parse() *ast.Program {
-	return program(p)
+	prog := program(p)
+	if prog == nil {
+		p.parseError("Nil program error")
+	}
+	return prog
 }
 
 func program(p *Parser) *ast.Program {
 	pac := packageStmt(p)
-	imp := importStmt(p)
-	typ := types(p)
-	decs := declarations(p)
-	funcs := functions(p)
-	if p.currToken().Type != ct.EOF {
-		p.parseError(fmt.Sprintf("Expected end of file but found :#{p.currToken.Literal}"))
+	if pac == nil {
+		return nil
 	}
-	if p.successfulBuild == false {
-		return ast.NewProgram(pac, imp, typ, decs, funcs, *st.NewSymbolTable())
+	imp := importStmt(p)
+	if imp == nil {
+		return nil
+	}
+	tps := typesStmt(p)
+	if tps == nil {
+		return nil
+	}
+	decs := declarations(p)
+	if decs == nil {
+		return nil
+	}
+	funcs := functions(p)
+	if funcs == nil {
+		p.parseError(fmt.Sprintf("Nill calls"))
+		return nil
+	}
+	if p.currToken().Type != ct.EOF {
+		p.parseError(fmt.Sprintf(" Expected end of file but found:%s on line num: %d", p.currToken().Literal, p.currToken().Rows))
+	}
+	if p.successfulBuild {
+		return ast.NewProgram(pac, imp, tps, decs, funcs)
 	}
 	return nil
 }
 
 func packageStmt(p *Parser) *ast.Package {
-	var pacTok, idTok ct.Token
+	var pac, id ct.Token
 	var pacMatch, idMatch bool
 
-	if pacTok, pacMatch = p.match(ct.PACKAGE); !pacMatch {
+	if pac, pacMatch = p.match(ct.PACKAGE); !pacMatch {
 		return nil
 	}
-	if idTok, idMatch = p.match(ct.IDENT); !idMatch {
+	if id, idMatch = p.match(ct.IDENT); !idMatch {
 		return nil
 	}
 	if _, scMatch := p.match(ct.SEMICOLON); !scMatch {
 		return nil
 	}
-
-	node := ast.NewPackage(ast.IdentLiteral{&idTok, idTok.Literal})
-	node.Token = &pacTok
+	node := ast.NewPackage(ast.IdentLiteral{Token: &id, Id: id.Literal})
+	node.Token = &pac
 	return node
 }
 
 func importStmt(p *Parser) *ast.Import {
-	var impTok, fmtTok ct.Token
-	var impMatch, fmtMatch bool
+	var imp, imppck ct.Token
+	var impMatch, imppckMatch bool
 
-	if impTok, impMatch = p.match(ct.IMPORT); !impMatch {
+	if imp, impMatch = p.match(ct.IMPORT); !impMatch {
 		return nil
 	}
 	if _, lQtdMatch := p.match(ct.DOUQUAT); !lQtdMatch {
 		return nil
 	}
-	if fmtTok, fmtMatch = p.match(ct.FMT); !fmtMatch {
+	if imppck, imppckMatch = p.match(ct.FMT); !imppckMatch { //Currently only support fmt for the import package
 		return nil
 	}
 	if _, rQtdMatch := p.match(ct.DOUQUAT); !rQtdMatch {
@@ -106,105 +172,106 @@ func importStmt(p *Parser) *ast.Import {
 		return nil
 	}
 
-	node := ast.NewImport(ast.IdentLiteral{&fmtTok, fmtTok.Literal})
-	node.Token = &impTok
+	node := ast.NewImport(ast.IdentLiteral{&imppck, imppck.Literal, -1})
+	node.Token = &imp
 	return node
 }
 
-func types(p *Parser) *ast.Types {
-	var typdecs []ast.TypeDeclaration
-	typdec := typeDeclaration(p)
-	if typdec != nil {
-		typdecs = append(typdecs, *typdec)
-		for {
-			if typdec = typeDeclaration(p); typdec != nil {
-				typdecs = append(typdecs, *typdec)
-			} else {
-				break
-			}
+func typesStmt(p *Parser) *ast.Types {
+	var typeDeclarations []ast.TypeDeclaration
+	for {
+		if typeDeclaration := typeDeclaration(p); typeDeclaration != nil {
+			typeDeclarations = append(typeDeclarations, *typeDeclaration)
+		} else {
+			break
 		}
-		node := ast.NewTypes(typdecs)
-		return node
 	}
-	return nil
+	return ast.NewTypes(typeDeclarations)
 }
 
 func typeDeclaration(p *Parser) *ast.TypeDeclaration {
-	var typTok, idTok ct.Token
-	var typMac, idMac, structMac, lbrMac, rbrMac, scMac bool
-	if typTok, typMac = p.match(ct.TYPE); !typMac {
+	var typeToken, idToken ct.Token
+	var typeMatch, idMactch, structMatch, lbrMactch, rightBracketMactch, semicolonMatch bool
+	if typeToken, typeMatch = p.match(ct.TYPE); !typeMatch {
 		return nil
 	}
-	if idTok, idMac = p.match(ct.IDENT); !idMac {
+	if idToken, idMactch = p.match(ct.IDENT); !idMactch {
 		return nil
 	}
-	if _, structMac = p.match(ct.STRUCT); !structMac {
+	if _, structMatch = p.match(ct.STRUCT); !structMatch {
 		return nil
 	}
-	if _, lbrMac = p.match(ct.LEFTBRAC); !lbrMac {
+	if _, lbrMactch = p.match(ct.LEFTBRAC); !lbrMactch {
 		return nil
 	}
 	astFields := fields(p)
 	if astFields == nil {
 		return nil
 	}
-	if _, rbrMac = p.match(ct.RIGHTBRAC); !rbrMac {
+	if _, rightBracketMactch = p.match(ct.RIGHTBRAC); !rightBracketMactch {
 		return nil
 	}
-	if _, scMac = p.match(ct.SEMICOLON); !scMac {
+	if _, semicolonMatch = p.match(ct.SEMICOLON); !semicolonMatch {
 		return nil
 	}
 
-	node := ast.NewTypeDeclaration(ast.IdentLiteral{&idTok, idTok.Literal}, astFields)
-	node.Token = &typTok
+	node := ast.NewTypeDeclaration(ast.IdentLiteral{&idToken, idToken.Literal, -1}, astFields)
+	node.Token = &typeToken
 	return node
 }
 
 func fields(p *Parser) *ast.Fields {
-	var decls []ast.Decl
-
-	dec := decl(p)
-	if dec != nil {
-		decls = append(decls, *dec)
-		for {
-			dec = decl(p)
-			if decl != nil {
-				decls = append(decls, *dec)
-			} else {
-				break
-			}
+	var fieldsDeclarationList = make([]ast.Decl, 0)
+	for {
+		fieldsDeclaration := decl(p)
+		//fmt.Println(fieldsDeclaration)
+		if fieldsDeclaration != nil {
+			fieldsDeclarationList = append(fieldsDeclarationList, *fieldsDeclaration)
+		} else {
+			break
+		}
+		if _, match := p.match(ct.SEMICOLON); !match {
+			return nil
 		}
 	}
-
-	node := ast.NewFields(decls)
+	if len(fieldsDeclarationList) < 1 {
+		return nil
+	}
+	node := ast.NewFields(fieldsDeclarationList)
 	return node
 }
 
 func decl(p *Parser) *ast.Decl {
-	var tok ct.Token
+	var IDToken ct.Token
 	var match bool
-	if tok, match = p.match(ct.IDENT); !match {
+	if IDToken, match = p.match(ct.IDENT); !match {
 		return nil
 	}
 	astType := typeExpression(p)
 	if astType == nil {
 		return nil
 	}
-	node := ast.NewDecl(ast.IdentLiteral{&tok, tok.Literal}, astType)
-	node.Token = &tok
+	node := ast.NewDecl(ast.IdentLiteral{Token: &IDToken, Id: IDToken.Literal}, astType)
+	node.Token = &IDToken
 	return node
 }
 
 func typeExpression(p *Parser) *ast.Type {
 	if typeTok, match := p.match(ct.INT); match {
-		return ast.NewType(typeTok.Literal)
+		node := ast.NewType("int")
+		node.Token = &typeTok
+		return node
 	}
 	if typeTok, match := p.match(ct.BOOL); match {
-		return ast.NewType(typeTok.Literal)
+		node := ast.NewType("bool")
+		node.Token = &typeTok
+		return node
 	}
 	if typeTok, match := p.match(ct.ASTERISK); match {
-		if idTok, idMatch := p.match(ct.IDENT); idMatch {
-			return ast.NewType(typeTok.Literal + idTok.Literal)
+		if idToken, idMatch := p.match(ct.IDENT); idMatch {
+			node := ast.NewType(typeTok.Literal + idToken.Literal)
+			node.Token = &idToken
+			return node
 		}
 		return nil
 	}
@@ -212,88 +279,84 @@ func typeExpression(p *Parser) *ast.Type {
 }
 
 func declarations(p *Parser) *ast.Declarations {
-	var decs []ast.Declaration
-	dec := declaration(p)
-	if dec != nil {
-		decs = append(decs, *dec)
-		for {
-			if dec = declaration(p); dec != nil {
-				decs = append(decs, *dec)
-			} else {
-				break
-			}
-		}
-		node := ast.NewDeclarations(decs)
-		return node
-	}
-	return nil
-}
-
-func declaration(p *Parser) *ast.Declaration {
-	var varmatch, scmatch bool
-	var varTok ct.Token
-	if varTok, varmatch = p.match(ct.VAR); !varmatch {
-		return nil
-	}
-	idTok := ids(p)
-	if idTok == nil {
-		return nil
-	}
-	typeTok := typeExpression(p)
-	if typeTok == nil {
-		return nil
-	}
-	if _, scmatch = p.match(ct.SEMICOLON); !scmatch {
-		return nil
-	}
-	node := ast.NewDeclaration(idTok, typeTok)
-	node.Token = &varTok
-	return node
-}
-
-func ids(p *Parser) *ast.Ids {
-	var idTok ct.Token
-	var idMatch bool
-
-	var ids []ast.IdentLiteral
-
+	var declarationList []ast.Declaration
 	for {
-		if idTok, idMatch = p.match(ct.IDENT); idMatch {
-			ids = append(ids, ast.IdentLiteral{&idTok, idTok.Literal})
+		if dec := declaration(p); dec != nil {
+			declarationList = append(declarationList, *dec)
 		} else {
 			break
 		}
 	}
 
+	return ast.NewDeclarations(declarationList)
+}
+
+func declaration(p *Parser) *ast.Declaration {
+	var varMatch, semicolonMatch bool
+	var varToken ct.Token
+	if varToken, varMatch = p.match(ct.VAR); !varMatch {
+		return nil
+	}
+	idToken := ids(p)
+	if idToken == nil {
+		return nil
+	}
+	typeToken := typeExpression(p)
+	if typeToken == nil {
+		return nil
+	}
+	if _, semicolonMatch = p.match(ct.SEMICOLON); !semicolonMatch {
+		return nil
+	}
+	node := ast.NewDeclaration(idToken, typeToken)
+	node.Token = &varToken
+	return node
+}
+
+func ids(p *Parser) *ast.Ids {
+	var ids []ast.IdentLiteral
+	if idToken, idMatch := p.match(ct.IDENT); idMatch {
+		ids = append(ids, ast.IdentLiteral{Token: &idToken, Id: idToken.Literal})
+	}
+	for {
+		if _, semiMatch := p.match(ct.PUNCTUATOR); semiMatch {
+			if idToken, idMatch := p.match(ct.IDENT); idMatch {
+				ids = append(ids, ast.IdentLiteral{Token: &idToken, Id: idToken.Literal})
+			} else {
+				return nil
+			}
+		} else {
+			break
+		}
+	}
+	if len(ids) < 1 {
+		return nil
+	}
 	node := ast.NewIds(ids)
 	return node
 }
 
 func functions(p *Parser) *ast.Functions {
-	var funs []ast.Function
-	fun := function(p)
-	if fun != nil {
-		funs = append(funs, *fun)
-		for {
-			if fun = function(p); fun != nil {
-				funs = append(funs, *fun)
-			} else {
-				break
-			}
+	var functionList []ast.Function
+
+	for {
+		if function := function(p); function != nil {
+			functionList = append(functionList, *function)
+		} else {
+			break
 		}
-		node := ast.NewFunctions(funs)
-		return node
 	}
-	return nil
+
+	return ast.NewFunctions(functionList)
 }
 
 func function(p *Parser) *ast.Function {
-	var funcTok, idTok ct.Token
+	var functionToken, idToken ct.Token
 	var funcMatch, idMatch bool
-	if funcTok, funcMatch = p.match(ct.FUNC); !funcMatch {
+	if functionToken, funcMatch = p.match(ct.FUNC); !funcMatch {
 		return nil
 	}
-	if idTok, idMatch = p.match(ct.IDENT); idMatch {
+	if idToken, idMatch = p.match(ct.IDENT); !idMatch {
 		return nil
 	}
 	paras := parameters(p)
@@ -318,37 +381,41 @@ func function(p *Parser) *ast.Function {
 	if _, rbraceMatch := p.match(ct.RIGHTBRAC); !rbraceMatch {
 		return nil
 	}
-
-	node := ast.NewFunction(ast.IdentLiteral{&idTok, idTok.Literal}, paras, retTyp, decls, stmts, st.NewSymbolTable())
-	node.Token = &funcTok
+	node := ast.NewFunction(ast.IdentLiteral{Token: &idToken, Id: idToken.Literal}, paras, retTyp, decls, stmts)
+	node.Token = &functionToken
 	return node
 }
 
 func parameters(p *Parser) *ast.Parameters {
-	var lParenTok ct.Token
-	var lParenMatch bool
-	if lParenTok, lParenMatch = p.match(ct.LEFTPAR); !lParenMatch {
+	var declarationList []ast.Decl
+	var leftParenToken ct.Token
+	var leftParenMatch bool
+
+	if leftParenToken, leftParenMatch = p.match(ct.LEFTPAR); !leftParenMatch {
 		return nil
 	}
 
-	var decls []ast.Decl
-
-	for {
-		if _, commaMatch := p.match(ct.PUNCTUATOR); !commaMatch {
-			return nil
-		}
-		if decl := decl(p); decl != nil {
-			decls = append(decls, *decl)
-		} else {
-			break
+	declFirst := decl(p)
+	if declFirst != nil {
+		declarationList = append(declarationList, *declFirst)
+		for {
+			if _, commaMatch := p.match(ct.PUNCTUATOR); !commaMatch {
+				break
+			}
+			if decl := decl(p); decl != nil {
+				declarationList = append(declarationList, *decl)
+			} else {
+				return nil
+			}
 		}
 	}
+
 	if _, rParenMatch := p.match(ct.RIGHTPAR); !rParenMatch {
 		return nil
 	}
 
-	node := ast.NewParameters(decls)
-	node.Token = &lParenTok
+	node := ast.NewParameters(declarationList)
+	node.Token = &leftParenToken
 	return node
 }
 
@@ -359,33 +426,27 @@ func returnType(p *Parser) *ast.ReturnType {
 		node.Token = typTok.Token
 		return node
 	} else {
-		node := ast.NewReturnType(nil)
-		return node
+		return ast.NewReturnType(ast.NewType(""))
 	}
 }
 
 func statements(p *Parser) *ast.Statements {
-	var stmts []ast.Statement
-	stmt := statement(p)
-	if stmt != nil {
-		stmts = append(stmts, *stmt)
-		for {
-			if stmt = statement(p); stmt != nil {
-				stmts = append(stmts, *stmt)
-			} else {
-				break
-			}
+	var statementsList []ast.Statement
+
+	for {
+		if stmt := statement(p); stmt != nil {
+			statementsList = append(statementsList, *stmt)
+		} else {
+			break
 		}
-		node := ast.NewStatements(stmts)
-		return node
 	}
-	return nil
+	return ast.NewStatements(statementsList)
 }
 
 func statement(p *Parser) *ast.Statement {
-	bloc := block(p)
-	if bloc != nil {
-		return ast.NewStatement(bloc)
+	blck := block(p)
+	if blck != nil {
+		return ast.NewStatement(blck)
 	}
 	assi := assignment(p)
 	if assi != nil {
@@ -419,28 +480,32 @@ func statement(p *Parser) *ast.Statement {
 }
 
 func block(p *Parser) *ast.Block {
-	if lbraceTok, lbraceMatch := p.match(ct.LEFTBRAC); lbraceMatch {
-		stmtsTok := statements(p)
-		if stmtsTok == nil {
-			return nil
-		}
-		if _, rbraceMatch := p.match(ct.RIGHTBRAC); rbraceMatch {
-			node := ast.NewBlock(stmtsTok)
-			node.Token = &lbraceTok
-			return node
-		}
+	var leftBraceketToken ct.Token
+	var leftBraceketMatch bool
+	if leftBraceketToken, leftBraceketMatch = p.match(ct.LEFTBRAC); !leftBraceketMatch {
+		return nil
 	}
-	return nil
+	stmts := statements(p)
+	if stmts == nil {
+		return nil
+	}
+	if _, rightBraceketMatch := p.match(ct.RIGHTBRAC); !rightBraceketMatch {
+		return nil
+	}
+	blockExpr := ast.NewBlock(stmts)
+	blockExpr.Token = &leftBraceketToken
+	return blockExpr
 }
 
 func assignment(p *Parser) *ast.Assignment {
-	lval := lvalue(p)
-	if lval == nil {
+	leftVal := lvalue(p)
+	if leftVal == nil {
 		return nil
 	}
-	if _, match := p.match(ct.ASSIGN); !match {
+	if _, match := p.PseudoMatch(ct.ASSIGN, true); !match {
 		return nil
 	}
+	p.RollForward()
 	expr := expression(p)
 	if expr == nil {
 		return nil
@@ -448,84 +513,85 @@ func assignment(p *Parser) *ast.Assignment {
 	if _, match := p.match(ct.SEMICOLON); !match {
 		return nil
 	}
-	node := ast.NewAssignment(lval, expr)
+	node := ast.NewAssignment(leftVal, expr)
 	return node
 }
 
 func read(p *Parser) *ast.Read {
-	var fmtTok, idTok ct.Token
+	var fmtTok, idToken ct.Token
 	var fmtMatch, idMatch bool
 
-	if fmtTok, fmtMatch = p.match(ct.FMT); !fmtMatch {
+	if fmtTok, fmtMatch = p.PseudoMatch(ct.FMT, true); !fmtMatch {
 		return nil
 	}
-	if _, match := p.match(ct.DOT); !match {
+	if _, match := p.PseudoMatch(ct.DOT, true); !match {
 		return nil
 	}
-	if _, match := p.match(ct.SCAN); !match {
+	if _, match := p.PseudoMatch(ct.SCAN, true); !match {
 		return nil
 	}
-	if _, match := p.match(ct.LEFTPAR); !match {
+	if _, match := p.PseudoMatch(ct.LEFTPAR, true); !match {
 		return nil
 	}
-	if _, match := p.match(ct.AMPERSAND); !match {
+	if _, match := p.PseudoMatch(ct.AMPERSAND, true); !match {
 		return nil
 	}
-	if idTok, idMatch = p.match(ct.IDENT); !idMatch {
+	if idToken, idMatch = p.PseudoMatch(ct.IDENT, true); !idMatch {
 		return nil
 	}
-	if _, match := p.match(ct.RIGHTPAR); !match {
+	if _, match := p.PseudoMatch(ct.RIGHTPAR, true); !match {
 		return nil
 	}
-	if _, match := p.match(ct.SEMICOLON); !match {
+	if _, match := p.PseudoMatch(ct.SEMICOLON, true); !match {
 		return nil
 	}
-
-	node := ast.NewRead(ast.IdentLiteral{&idTok, idTok.Literal})
+	p.RollForward()
+	node := ast.NewRead(ast.IdentLiteral{Token: &idToken, Id: idToken.Literal})
 	node.Token = &fmtTok
 	return node
 }
 
 func print(p *Parser) *ast.Print {
-	var fmtTok, printTok, idTok ct.Token
+	var fmtToken, printToken, idToken ct.Token
 	var fmtMatch, printMatch, idMatch bool
 
-	if fmtTok, fmtMatch = p.match(ct.FMT); !fmtMatch {
+	if fmtToken, fmtMatch = p.PseudoMatch(ct.FMT, true); !fmtMatch {
 		return nil
 	}
-	if _, match := p.match(ct.DOT); !match {
+	if _, match := p.PseudoMatch(ct.DOT, true); !match {
 		return nil
 	}
-	printTok, printMatch = p.match(ct.PRINT)
+	printToken, printMatch = p.PseudoMatch(ct.PRINT, false)
 	if !printMatch {
-		printTok, printMatch = p.match(ct.PRINTLN)
+		printToken, printMatch = p.PseudoMatch(ct.PRINTLN, true)
 	}
 	if !printMatch {
 		return nil
 	}
-	if _, match := p.match(ct.LEFTPAR); !match {
+	if _, match := p.PseudoMatch(ct.LEFTPAR, true); !match {
 		return nil
 	}
-	if idTok, idMatch = p.match(ct.IDENT); !idMatch {
+	if idToken, idMatch = p.PseudoMatch(ct.IDENT, true); !idMatch {
 		return nil
 	}
-	if _, match := p.match(ct.RIGHTPAR); !match {
+	if _, match := p.PseudoMatch(ct.RIGHTPAR, true); !match {
 		return nil
 	}
-	if _, match := p.match(ct.SEMICOLON); !match {
+	if _, match := p.PseudoMatch(ct.SEMICOLON, true); !match {
 		return nil
 	}
 
-	node := ast.NewPrint(printTok.Literal, ast.IdentLiteral{&idTok, idTok.Literal})
-	node.Token = &fmtTok
+	p.RollForward()
+	node := ast.NewPrint(printToken.Literal, ast.IdentLiteral{Token: &idToken, Id: idToken.Literal, RegisterLoc: -1})
+	node.Token = &fmtToken
 	return node
 }
 
 func conditional(p *Parser) *ast.Conditional {
-	var ifTok ct.Token
+	var ifToken ct.Token
 	var ifMatch bool
 
-	if ifTok, ifMatch = p.match(ct.IF); !ifMatch {
+	if ifToken, ifMatch = p.match(ct.IF); !ifMatch {
 		return nil
 	}
 	if _, match := p.match(ct.LEFTPAR); !match {
@@ -551,16 +617,16 @@ func conditional(p *Parser) *ast.Conditional {
 	} else {
 		node = ast.NewConditional(expr, bloc, false, nil)
 	}
-	node.Token = &ifTok
+	node.Token = &ifToken
 
 	return node
 }
 
 func loop(p *Parser) *ast.Loop {
-	var forTok ct.Token
+	var forToken ct.Token
 	var forMatch bool
 
-	if forTok, forMatch = p.match(ct.FOR); !forMatch {
+	if forToken, forMatch = p.match(ct.FOR); !forMatch {
 		return nil
 	}
 	if _, match := p.match(ct.LEFTPAR); !match {
@@ -579,7 +645,7 @@ func loop(p *Parser) *ast.Loop {
 	}
 
 	node := ast.NewLoop(expr, bloc)
-	node.Token = &forTok
+	node.Token = &forToken
 	return node
 }
 
@@ -606,9 +672,9 @@ func returnStmt(p *Parser) *ast.Return {
 }
 
 func invocation(p *Parser) *ast.Invocation {
-	var idTok ct.Token
+	var idToken ct.Token
 	var idMatch bool
-	if idTok, idMatch = p.match(ct.IDENT); !idMatch {
+	if idToken, idMatch = p.match(ct.IDENT); !idMatch {
 		return nil
 	}
 	arg := arguments(p)
@@ -619,30 +685,32 @@ func invocation(p *Parser) *ast.Invocation {
 		return nil
 	}
 
-	node := ast.NewInvocation(ast.IdentLiteral{&idTok, idTok.Literal}, arg)
-	node.Token = &idTok
+	node := ast.NewInvocation(ast.IdentLiteral{Token: &idToken, Id: idToken.Literal}, arg)
+	node.Token = &idToken
 	return node
 }
 
 func arguments(p *Parser) *ast.Arguments {
-	var lParentok ct.Token
+	var lParentoken ct.Token
 	var lParenMatch bool
 	var exprs []ast.Expression
 
-	if lParentok, lParenMatch = p.match(ct.LEFTPAR); !lParenMatch {
+	if lParentoken, lParenMatch = p.match(ct.LEFTPAR); !lParenMatch {
 		return nil
 	}
-
+	expr := expression(p)
+	if expr != nil {
+		exprs = append(exprs, *expr)
+	}
 	for {
+		if _, match := p.match(ct.PUNCTUATOR); !match {
+			break
+		}
 		expr := expression(p)
 		if expr != nil {
 			exprs = append(exprs, *expr)
 		} else {
-			if _, match := p.match(ct.PUNCTUATOR); !match {
-				break
-			} else {
-				return nil
-			}
+			return nil
 		}
 	}
 
@@ -651,33 +719,36 @@ func arguments(p *Parser) *ast.Arguments {
 	}
 
 	node := ast.NewArguments(exprs)
-	node.Token = &lParentok
-
+	node.Token = &lParentoken
 	return node
 }
 
 func lvalue(p *Parser) *ast.LValue {
-	var idTok ct.Token
-	var ids []ast.IdentLiteral
-
+	var idToken ct.Token
+	var idList []ast.IdentLiteral
+	if id, match := p.PseudoMatch(ct.IDENT, true); match {
+		idList = append(idList, ast.IdentLiteral{Token: &id, Id: id.Literal})
+	} else {
+		return nil
+	}
 	for {
-		if _, match := p.match(ct.DOT); !match {
+		if _, match := p.PseudoMatch(ct.DOT, false); !match {
 			break
 		}
-		if id, match := p.match(ct.IDENT); match {
-			ids = append(ids, ast.IdentLiteral{&id, id.Literal})
+		if id, match := p.PseudoMatch(ct.IDENT, true); match {
+			idList = append(idList, ast.IdentLiteral{Token: &id, Id: id.Literal})
 		} else {
 			return nil
 		}
 	}
-	node := ast.NewLvalue(ids)
-	node.Token = &idTok
+	node := ast.NewLvalue(idList)
+	node.Token = &idToken
 	return node
 }
 
 func expression(p *Parser) *ast.Expression {
 	var bts []ast.BoolTerm
-	btLeft := boolterm(p)
+	btLeft := boolTerm(p)
 	if btLeft == nil {
 		return nil
 	}
@@ -685,7 +756,7 @@ func expression(p *Parser) *ast.Expression {
 		if _, match := p.match(ct.OR); !match {
 			break
 		}
-		btRight := boolterm(p)
+		btRight := boolTerm(p)
 		if btRight != nil {
 			bts = append(bts, *btRight)
 		} else {
@@ -698,64 +769,69 @@ func expression(p *Parser) *ast.Expression {
 	return node
 }
 
-func boolterm(p *Parser) *ast.BoolTerm {
+func boolTerm(p *Parser) *ast.BoolTerm {
 	var ets []ast.EqualTerm
-	etLeft := equalterm(p)
-	if etLeft == nil {
+	feq := equalTerm(p)
+	if feq == nil {
 		return nil
+	} else {
+		ets = append(ets, *feq)
 	}
 	for {
 		if _, match := p.match(ct.AND); !match {
 			break
 		}
-		etRight := equalterm(p)
-		if etRight != nil {
-			ets = append(ets, *etRight)
+		eqt := equalTerm(p)
+		if equalTerm != nil {
+			ets = append(ets, *eqt)
 		} else {
 			return nil
 		}
 	}
 
-	node := ast.NewBoolTerm(etLeft, ets)
-	node.Token = etLeft.Token
+	node := ast.NewBoolTerm(ets)
+	node.Token = feq.Token
 	return node
 }
 
-func equalterm(p *Parser) *ast.EqualTerm {
+func equalTerm(p *Parser) *ast.EqualTerm {
 	var eqOps []string
-	var rts []ast.RelationTerm
-	var eqTok ct.Token
-	var match bool
-	rtLeft := relationterm(p)
-	if rtLeft == nil {
+	var relationTermList []ast.RelationTerm
+	frt := relationTerm(p)
+	if frt == nil {
 		return nil
+	} else {
+		relationTermList = append(relationTermList, *frt)
 	}
+	var eqToken ct.Token
+	var match bool
 	for {
-		if eqTok, match = p.match(ct.EQUA); !match {
-			if eqTok, match = p.match(ct.NOTEQU); !match {
+		if eqToken, match = p.match(ct.EQUA); !match {
+			if eqToken, match = p.match(ct.NOTEQU); !match {
 				break
 			}
 		}
-		eqOps = append(eqOps, eqTok.Literal)
-		rtRight := relationterm(p)
-		if rtRight != nil {
-			rts = append(rts, *rtRight)
+		eqOps = append(eqOps, eqToken.Literal)
+		rt := relationTerm(p)
+		if rt != nil {
+			relationTermList = append(relationTermList, *rt)
 		} else {
 			return nil
 		}
 	}
 
-	node := ast.NewEqualTerm(rtLeft, eqOps, rts)
-	node.Token = rtLeft.Token
+	node := ast.NewEqualTerm(eqOps, relationTermList)
+	node.Token = frt.Token
 	return node
+
 }
 
-func relationterm(p *Parser) *ast.RelationTerm {
+func relationTerm(p *Parser) *ast.RelationTerm {
 	var rlOps []string
 	var sts []ast.SimpleTerm
 	var rlTok ct.Token
 	var match bool
-	stLeft := simpleterm(p)
+	stLeft := simpleTerm(p)
 	if stLeft == nil {
 		return nil
 	}
@@ -770,7 +846,7 @@ func relationterm(p *Parser) *ast.RelationTerm {
 			}
 		}
 		rlOps = append(rlOps, rlTok.Literal)
-		stRight := simpleterm(p)
+		stRight := simpleTerm(p)
 		if stRight != nil {
 			sts = append(sts, *stRight)
 		} else {
@@ -782,7 +858,7 @@ func relationterm(p *Parser) *ast.RelationTerm {
 	return node
 }
 
-func simpleterm(p *Parser) *ast.SimpleTerm {
+func simpleTerm(p *Parser) *ast.SimpleTerm {
 	var stOps []string
 	var tms []ast.Term
 	var stTok ct.Token
@@ -816,7 +892,7 @@ func term(p *Parser) *ast.Term {
 	var uts []ast.UnaryTerm
 	var tmTok ct.Token
 	var match bool
-	utLeft := unaryterm(p)
+	utLeft := unaryTerm(p)
 	if utLeft == nil {
 		return nil
 	}
@@ -827,7 +903,7 @@ func term(p *Parser) *ast.Term {
 			}
 		}
 		tmOps = append(tmOps, tmTok.Literal)
-		utRight := unaryterm(p)
+		utRight := unaryTerm(p)
 		if utRight != nil {
 			uts = append(uts, *utRight)
 		} else {
@@ -840,7 +916,7 @@ func term(p *Parser) *ast.Term {
 	return node
 }
 
-func unaryterm(p *Parser) *ast.UnaryTerm {
+func unaryTerm(p *Parser) *ast.UnaryTerm {
 	op := ""
 	var uniOp ct.Token
 	var match bool
@@ -849,7 +925,7 @@ func unaryterm(p *Parser) *ast.UnaryTerm {
 	} else if uniOp, match = p.match(ct.MINUS); match {
 		op = uniOp.Literal
 	}
-	selTok := selectorterm(p)
+	selTok := selectorTerm(p)
 	if selTok == nil {
 		return nil
 	}
@@ -858,9 +934,9 @@ func unaryterm(p *Parser) *ast.UnaryTerm {
 	return node
 }
 
-func selectorterm(p *Parser) *ast.SelectorTerm {
+func selectorTerm(p *Parser) *ast.SelectorTerm {
 	var ids []ast.IdentLiteral
-	var idTok ct.Token
+	var idToken ct.Token
 	var match bool
 	facTok := factor(p)
 	if facTok == nil {
@@ -870,10 +946,10 @@ func selectorterm(p *Parser) *ast.SelectorTerm {
 		if _, match := p.match(ct.DOT); !match {
 			break
 		}
-		if idTok, match = p.match(ct.IDENT); !match {
+		if idToken, match = p.match(ct.IDENT); !match {
 			return nil
 		}
-		ids = append(ids, ast.IdentLiteral{&idTok, idTok.Literal})
+		ids = append(ids, ast.IdentLiteral{Token: &idToken, Id: idToken.Literal})
 	}
 
 	node := ast.NewSelectorTerm(facTok, ids)
@@ -882,17 +958,38 @@ func selectorterm(p *Parser) *ast.SelectorTerm {
 }
 
 func factor(p *Parser) *ast.Factor {
-	var tok ct.Token
-	var match bool
-	var node *ast.Factor
-	if tok, match = p.match(ct.LEFTPAR); match {
+	var node ast.Expr
+
+	if numTok, match := p.match(ct.NUMBER); match {
+		val, _ := strconv.ParseInt(numTok.Literal, 10, 64)
+		node = &ast.IntLiteral{Token: &numTok, Value: val, RegisterLoc: -1}
+	} else if truTok, match := p.match(ct.TRUE); match {
+		node = &ast.BoolLiteral{Token: &truTok, BoolValue: true}
+	} else if flsTok, match := p.match(ct.FALSE); match {
+		node = &ast.BoolLiteral{Token: &flsTok, BoolValue: false}
+	} else if nilTok, match := p.match(ct.NIL); match {
+		node = &ast.NilLiteral{Token: &nilTok}
+	} else if identTok, match := p.match(ct.IDENT); match {
+		//" 'id' [Arguments] "
+		argu := arguments(p)
+		idl := &ast.IdentLiteral{Token: &identTok, Id: identTok.Literal}
+		if argu == nil {
+			node = idl
+		} else {
+			node = &ast.InvocExpr{Token: &identTok, Ident: *idl, InnerArgs: argu}
+		}
+	} else if lpTok, match := p.match(ct.LEFTPAR); match {
+		//"'(' Expression ')'"
 		expr := expression(p)
 		if expr != nil {
 			if _, match := p.match(ct.RIGHTPAR); match {
-				node = ast.NewFactor(expr)
-				node.Token = &tok
+				node = &ast.PriorityExpression{Token: &lpTok, InnerExpression: expr}
 			}
 		}
 	}
-	return node
+	if node != nil {
+		return ast.NewFactor(&node)
+	} else {
+		return nil
+	}
 }

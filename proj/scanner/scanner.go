@@ -37,15 +37,19 @@ func calTokenList(l *Scanner, input string) []token.Token {
 	var curToken *token.Token
 	size := len(input) - 1
 	idx := 0
+
 	for ; idx <= size; idx++ {
 		c := input[idx]
-		//skip space or newline
-		if c == ' ' || c == '\n' || c == '\t' {
+
+		//skip space, tab and newline
+		if c == ' ' || c == '\n' || c == '\t' || c == '\r' {
 			if c == '\n' {
 				l.curRow += 1
+				l.commentLine = false
 			}
 			continue
 		}
+		//fmt.Println(strconv.Itoa(int(c)))
 		switch c {
 		case '+':
 			curToken = token.New(token.PLUS, "+", l.curRow)
@@ -56,6 +60,7 @@ func calTokenList(l *Scanner, input string) []token.Token {
 
 		case '/':
 			if nextChar(input, idx, size) == '/' {
+				l.commentLine = true
 				curToken = token.New(token.COMMENT, "//", l.curRow)
 				idx += 1
 			} else {
@@ -100,7 +105,7 @@ func calTokenList(l *Scanner, input string) []token.Token {
 			}
 		case '!':
 			if nextChar(input, idx, size) == '=' {
-				curToken = token.New(token.GREATEQU, ">=", l.curRow)
+				curToken = token.New(token.NOTEQU, "!=", l.curRow)
 				idx += 1
 			} else {
 				curToken = token.New(token.GREATER, ">", l.curRow)
@@ -145,8 +150,9 @@ func calTokenList(l *Scanner, input string) []token.Token {
 				curToken = token.New(token.INVALID, string(c), l.curRow)
 			}
 		}
-
-		tokenList = append(tokenList, *curToken)
+		if !l.commentLine {
+			tokenList = append(tokenList, *curToken)
+		}
 	}
 	return tokenList
 }
@@ -201,6 +207,7 @@ type Scanner struct {
 	reader         *bufio.Reader
 	idx            int
 	curRow         int
+	commentLine    bool
 }
 
 func New(inputContext *context.CompilerContext) *Scanner {
@@ -214,13 +221,13 @@ func New(inputContext *context.CompilerContext) *Scanner {
 		reader:       reader,
 		idx:          0,
 		curRow:       1,
+		commentLine:  false,
 	}
 }
 
-func (l *Scanner) NextToken() token.Token {
-	if l.idx+1 > len(l.finalTokenList) {
+func (l *Scanner) NextToken() (*token.Token, bool) {
+	if l.idx+1 > len(l.finalTokenList) { //Check whether the pointer has exceeded the end of the finalTokenList
 		inputString, err := l.reader.ReadString(' ')
-
 		l.finalTokenList = append(l.finalTokenList, calTokenList(l, inputString)...)
 		if err != nil {
 			if err == io.EOF {
@@ -230,8 +237,12 @@ func (l *Scanner) NextToken() token.Token {
 			}
 		}
 	}
-	l.idx += 1
-	return l.finalTokenList[l.idx-1]
+	if l.idx+1 <= len(l.finalTokenList) {
+		l.idx += 1
+		return &l.finalTokenList[l.idx-1], true
+	} else {
+		return nil, false
+	}
 }
 
 func PrintToken(t token.Token) {
@@ -239,13 +250,18 @@ func PrintToken(t token.Token) {
 }
 
 func (l *Scanner) PrintAllTokens() {
-
+	fmt.Println("Start printing tokens")
 	fmt.Printf("|%-20v|%-20v|%-20v|\n", "Token Type", "Token Literal", "Rows")
 	for {
-		nextToken := l.NextToken()
-		PrintToken(nextToken)
-		if nextToken.Type == token.EOF {
-			return
+		if nextToken, readSuccess := l.NextToken(); readSuccess {
+			PrintToken(*nextToken)
+			if nextToken.Type == token.EOF {
+				return
+			}
+		} else {
+			continue
 		}
+
 	}
+	fmt.Println("Finish printing tokens")
 }
